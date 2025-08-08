@@ -7,23 +7,24 @@ from app.routers import auth, misc, modules, progress, quiz, waitlist, users, co
 if not settings.SECRET_KEY:
     raise RuntimeError("SECRET_KEY is required")
 
-api = FastAPI()
-api.add_middleware(
+app = FastAPI(title="AI Learning Portal API")
+
+app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://atlas.synthevia.academy",
-        "https://synthevia.academy",
         "https://www.synthevia.academy",
-        "http://localhost:3000",
-        "http://localhost:3001",
+        "https://synthevia.academy",     # add both, just in case
+        "https://atlas.synthevia.academy",
+        "http://localhost:3000",         # keep for dev
+        "http://localhost:3001",         # keep for dev
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET","POST","PUT","DELETE","OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
-app = FastAPI(title="AI Learning Portal API")
-app.mount("/api", api)
+
 
 app.include_router(auth.router)
 app.include_router(misc.router)
