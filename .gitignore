@@ -1,0 +1,42 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+ENV/
+env/
+.venv/
+.pyvenv.cfg
+
+# Environment variables
+.env
+
+# Firebase / Google credentials
+firebase-key.json
+serviceAccountKey.json
+seed.json
+
+# Python egg metadata
+*.egg-info/
+.eggs/
+
+# pip logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# VSCode settings (optional)
+.vscode/
+
+# Test, coverage, or profiling data
+htmlcov/
+.coverage
+.tox/
+.noseids
+.pytest_cache/
+.cache/
+coverage.xml
+
+# macOS metadata
+.DS_Store
