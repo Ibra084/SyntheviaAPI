@@ -49,6 +49,7 @@ if ENV == "development":
 else:
     CORS_ORIGINS = [
         "https://www.synthevia.academy",
+        "https://atlas.synthevia.academy/",
         "https://synthevia.academy",
         "https://projectsynthevia.onrender.com"
     ]

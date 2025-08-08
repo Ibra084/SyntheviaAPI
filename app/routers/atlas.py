@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 
 from app.core.security import decode_token
 from app.core.config import settings
-from app.db.firestore import db
+from app.db.firestore import db   # <- make sure this exports AsyncClient()
 from google.cloud import firestore
 # Add to imports
 import google.generativeai as genai
@@ -77,6 +77,20 @@ class SessionsListItem(BaseModel):
     can_edit: bool = False  # Frontend can use this to show edit controls\
 class RateLimitException(Exception):
     pass
+
+class WeakArea(BaseModel):
+    topic: str
+    description: str
+    severity: str = "medium"  # low, medium, high
+    first_identified: str
+    last_encountered: str
+    session_ids: List[str]  # Track which sessions this appeared in
+
+class WeakAreasUpdate(BaseModel):
+    weak_areas: List[WeakArea]
+
+class WeakAreasResponse(BaseModel):
+    weak_areas: List[WeakArea]
 
 def handle_gemini_error(e: Exception) -> str:
     """Translate Gemini errors to user-friendly messages"""
@@ -123,7 +137,7 @@ def now_iso() -> str:
 
 # ---- Routes ---------------------------------------------------------------
 @router.post("/session", response_model=CreateSessionResponse)
-def create_session(current_email: str = Depends(get_current_email)):
+async def create_session(current_email: str = Depends(get_current_email)):
     sid = uuid4().hex
     doc_ref = db.collection(COLL).document(sid)
 
@@ -131,7 +145,8 @@ def create_session(current_email: str = Depends(get_current_email)):
         {"role": "assistant", "content": "New session ready. Paste a topic or use an @command (e.g. @explain, @examples, @quiz, @hint, @summarize)."}
     ]
 
-    doc_ref.set({
+    await doc_ref.set({
+        
         "user_email": current_email,
         "created_at": firestore.SERVER_TIMESTAMP,
         "updated_at": firestore.SERVER_TIMESTAMP,
@@ -328,6 +343,20 @@ async def chat_handler(
         response = send_with_retry()
         reply = response.text
 
+        # Detect weak areas in this interaction
+        weak_areas = detect_weak_areas(message, reply)
+        
+        # If weak areas found, update them in the database
+        if weak_areas:
+            # Add session ID to each weak area
+            for area in weak_areas:
+                area.session_ids = [session_id]
+            
+            await update_weak_areas(
+                WeakAreasUpdate(weak_areas=weak_areas),
+                current_email
+            )
+
         # Special handling for quiz command
         if message.lower().startswith("@quiz"):
             topic = _topic_from(message)
@@ -335,16 +364,20 @@ async def chat_handler(
             return {
                 "reply": "Here's a quick 3-question quiz. Answer and I'll adapt the next one.",
                 "type": "quiz",
-                "quiz": quiz
+                "quiz": quiz,
+                "weak_areas": weak_areas  # Include any detected weak areas
             }
             
-        return {"reply": reply}
+        return {
+            "reply": reply,
+            "weak_areas": weak_areas  # Include any detected weak areas
+        }
 
     except Exception as e:
         error_msg = handle_gemini_error(e)
         print(f"Gemini error: {str(e)}")
         return {"reply": error_msg}
-
+    
 # ---- Demo helpers (match your DemoPage) -----------------------------------
 def _topic_from(cmd: str) -> str:
     import re
@@ -490,3 +523,119 @@ def _make_quiz(topic: str) -> Dict[str, Any]:
         }
       ]
     }
+
+@router.post("/sessions", response_model=CreateSessionResponse)
+async def create_session_via_plural(
+    current_email: str = Depends(get_current_email)
+):
+    """Alternative endpoint that matches frontend expectation"""
+    return await create_session(current_email)
+
+
+def detect_weak_areas(message: str, response: str) -> List[WeakArea]:
+    """Analyze conversation to identify potential weak areas"""
+    weak_areas = []
+    
+    # Simple keyword-based detection (replace with actual NLP/ML in production)
+    weak_keywords = {
+        "don't understand": "high",
+        "confused about": "high",
+        "not sure": "medium",
+        "struggling with": "high",
+        "difficulty": "medium",
+        "trouble": "medium",
+        "help with": "medium",
+        "explain again": "low"
+    }
+    
+    now = datetime.now(timezone.utc).isoformat()
+    
+    # Check both user message and AI response for indicators
+    text_to_analyze = f"{message}\n{response}".lower()
+    
+    for phrase, severity in weak_keywords.items():
+        if phrase in text_to_analyze:
+            # Extract topic - simple heuristic looking for nouns after weak phrases
+            topic = "unknown topic"
+            if phrase in message.lower():
+                parts = message.lower().split(phrase)
+                if len(parts) > 1:
+                    topic = parts[1].strip().split(".")[0].split(" ")[0]
+            
+            weak_areas.append(WeakArea(
+                topic=topic.capitalize(),
+                description=f"User expressed difficulty with {topic}",
+                severity=severity,
+                first_identified=now,
+                last_encountered=now,
+                session_ids=[]
+            ))
+    
+    return weak_areas
+
+@router.get("/weak-areas", response_model=WeakAreasResponse)
+async def get_weak_areas(current_email: str = Depends(get_current_email)):
+    """Get all weak areas for the current user"""
+    try:
+        doc_ref = db.collection("user_weak_areas").document(current_email)
+        doc = await doc_ref.get()
+        
+        if not doc.exists:
+            return {"weak_areas": []}
+            
+        return {"weak_areas": doc.to_dict().get("weak_areas", [])}
+    except Exception as e:
+        raise HTTPException(500, f"Error fetching weak areas: {str(e)}")
+
+@router.post("/weak-areas", response_model=WeakAreasResponse)
+async def update_weak_areas(
+    payload: WeakAreasUpdate,
+    current_email: str = Depends(get_current_email)
+):
+    """Update weak areas for the current user"""
+    try:
+        doc_ref = db.collection("user_weak_areas").document(current_email)
+        
+        # Merge new weak areas with existing ones
+        existing = []
+        doc = await doc_ref.get()
+        if doc.exists:
+            existing = doc.to_dict().get("weak_areas", [])
+        
+        # Convert existing to WeakArea objects
+        existing_areas = [WeakArea(**area) for area in existing]
+        
+        # Update existing areas or add new ones
+        updated_areas = []
+        
+        for new_area in payload.weak_areas:
+            # Check if this topic already exists
+            existing_area = next(
+                (area for area in existing_areas if area.topic.lower() == new_area.topic.lower()),
+                None
+            )
+            
+            if existing_area:
+                # Update existing area
+                existing_area.last_encountered = new_area.last_encountered
+                existing_area.severity = max_severity(existing_area.severity, new_area.severity)
+                if new_area.session_ids[0] not in existing_area.session_ids:
+                    existing_area.session_ids.append(new_area.session_ids[0])
+                updated_areas.append(existing_area)
+            else:
+                # Add new area
+                updated_areas.append(new_area)
+        
+        # Convert back to dict for Firestore
+        areas_dict = [area.dict() for area in updated_areas]
+        
+        await doc_ref.set({"weak_areas": areas_dict}, merge=True)
+        
+        return {"weak_areas": areas_dict}
+    except Exception as e:
+        raise HTTPException(500, f"Error updating weak areas: {str(e)}")
+
+def max_severity(s1: str, s2: str) -> str:
+    """Helper to determine max severity level"""
+    levels = {"low": 0, "medium": 1, "high": 2}
+    return s1 if levels[s1.lower()] >= levels[s2.lower()] else s2
