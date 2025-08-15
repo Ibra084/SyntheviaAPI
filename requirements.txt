@@ -26,3 +26,5 @@ grpcio-status>=1.62,<2
 
 # Generative AI (HTTPX dependency is handled transitively)
 google-generativeai>=0.5,<1
+
+rapidfuzz
