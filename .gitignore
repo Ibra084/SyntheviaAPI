@@ -39,4 +39,4 @@ htmlcov/
 coverage.xml
 
 # macOS metadata
-.DS_Storeseeding/serviceAccount.json
+seeding/serviceAccount.json
